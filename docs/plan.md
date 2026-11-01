@@ -373,12 +373,50 @@ will cost retries.
 
 ## 6. Memory and beliefs
 
-Two files per agent, as in the paper, but the semantic one is parseable:
+Two files per agent, as in the paper, but the semantic one is generated rather than
+authored:
 
 ```
-EPISODIC.jsonl   append-only: {t, day, summary, detail, action_ref}
-SEMANTIC.md      claims, rendered for humans; the source of truth is claims.db
+EPISODIC.jsonl   append-only: {t, day, summary, detail, claims?}
+SEMANTIC.md      rendered from claims.db on every read; never hand-edited
+claims.db        the source of truth (SQLite, node:sqlite)
 ```
+
+Generation instead of authorship is the deliberate divergence from the source
+experiment, where agents wrote freeform prose and a judge model had to reconstruct what
+they knew. Prose is unauditable: an agent can contradict itself across sessions and the
+researcher cannot tell a correction from a second belief.
+
+### 6.1 Reflection is schema extraction, not a tool loop
+
+Measured while building this layer, on three models:
+
+- Asked to record beliefs through memory tools, `qwen3.5:9b` replied "I will record two
+  verified beliefs" and called nothing. Claim extraction is a structured transform, not
+  an agentic decision, so it is a single schema-constrained request with one repair
+  retry.
+- Schema-constrained extraction produced valid claims on every model tested. `glm-5.2:cloud`
+  ignored `format` without `tools` and renamed the fields (`beliefs` for `claims`), which
+  the validator rejected and the repair retry fixed.
+- Reflection runs **once per day**, not once per action: per-action memory doubles the
+  request count and produces a log nobody reads.
+
+### 6.2 Unevidenced claims are downgraded, not rejected
+
+A claim that cites its own evidence stays as claimed. A `verified` or `fact` claim with
+no evidence is stored as `hypothesis`, because measurement showed the alternative is
+worse: models omit evidence even when instructed, and rejecting the claim discarded the
+belief entirely, leaving a stale *false* belief in force with nothing replacing it. The
+downgrade is recorded in the stored `kind`, so analysis can still separate asserted
+knowledge from supported knowledge.
+
+### 6.3 Provenance is resolved by what the id is
+
+Models write `fromAgent: "B"` next to a board post id, which is an accurate description
+of the source. Deciding provenance from which fields were filled rejected correct
+citations, so the resolver checks the id: a board post on the board becomes
+`board:post_N`, a known claim becomes `agent:<author>/<claim>`, and anything else is
+rejected with a reason the model can act on.
 
 Claim record:
 
@@ -696,6 +734,12 @@ Run on 2026-10-31; throwaway scripts, not committed.
 | **M0 runs with three different providers at once** | real loop: Rapier world + `glm-5.2:cloud`, `qwen3.5:9b`, `gemma4:12b-it-qat`, 5 rounds, 228 sim ticks | every decision schema-valid, ~1.8 s/round, `events.jsonl` + snapshot + digest written |
 | **M0 acceptance passes on that run** | replay from scratch twice, plus snapshot at round 2 → restore → replay tail | `rerun_identical: true`, all tail hashes match, terminal `b9296a8f…`, **PASS** |
 | `format` alone silently fails on glm | M0 loop with `format` only | agent A returned prose + `{"act":"MoveTo","p":[…]}`; no parseable action, so it never acted. Fixed by sending `tools` + `format` together |
+| Memory tools do not produce beliefs | `reflect` via tool loop on `qwen3.5:9b` | replied "I will record two verified beliefs" and called nothing; rewrote reflection as schema extraction |
+| Schema extraction produces claims | same prompt, constrained JSON, 3 models | valid events and claims on qwen3.5, gemma4 and glm after one repair on glm |
+| Rejecting unevidenced claims loses the belief | seeded false belief + empty evidence | all 4 claims rejected, the stale false belief survived; changed to downgrade |
+| Models mislabel a board post as an agent claim | `fromAgent:"B"` + `fromClaim:"post_1"` | resolving by id recorded it as board provenance instead of rejecting it |
+| Refutation needs claim ids in the prompt | reflect with ids listed vs not | without ids the model wrote "claim B does not exist"; with ids both models refuted correctly |
+| Memory writes and replay coexist | live run, 3 models, 3 rounds, `--reflect` | 3 claims recorded, run replays (`ok: true`) |
 
 Notes from running these:
 

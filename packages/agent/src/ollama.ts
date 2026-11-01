@@ -55,6 +55,7 @@ export class OllamaProvider implements Provider {
 
     const frames = parseMaybeNdjson(text);
     let content = "";
+    let toolName: string | undefined;
     let toolArgs: unknown = undefined;
     let promptTokens: number | undefined;
     let completionTokens: number | undefined;
@@ -69,7 +70,10 @@ export class OllamaProvider implements Provider {
         if (Array.isArray(calls) && calls.length > 0) {
           const first = asRecord(calls[0]);
           const fn = first ? asRecord(first["function"]) : null;
-          if (fn) toolArgs = fn["arguments"];
+          if (fn) {
+            toolName = readString(fn, "name");
+            toolArgs = fn["arguments"];
+          }
         }
       }
       if (rec["error"]) throw new Error(`ollama error: ${String(rec["error"])}`);
@@ -80,9 +84,12 @@ export class OllamaProvider implements Provider {
     }
 
     const value = toolArgs ?? parseContent(content);
+    const toolCall =
+      toolName !== undefined ? { name: toolName, arguments: toolArgs ?? null } : null;
 
     return {
       value,
+      toolCall,
       text: content,
       ...(promptTokens !== undefined ? { promptTokens } : {}),
       ...(completionTokens !== undefined ? { completionTokens } : {}),

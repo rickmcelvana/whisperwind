@@ -214,9 +214,23 @@ export interface ChatRequest {
   readonly maxTokens?: number;
 }
 
+export interface ToolCall {
+  readonly name: string;
+  /** Parsed arguments when the provider returned them as an object, else the raw string. */
+  readonly arguments: unknown;
+}
+
 export interface ChatResponse {
   /** Parsed JSON if the reply was JSON; otherwise the raw text. */
   readonly value: unknown;
+  /**
+   * The tool the model asked to call, when it made one.
+   *
+   * Kept separate from `value` because a model with several tools available must be
+   * able to say *which*; collapsing this to arguments alone silently turns every call
+   * into whichever tool the caller assumes.
+   */
+  readonly toolCall: ToolCall | null;
   readonly text: string;
   readonly promptTokens?: number;
   readonly completionTokens?: number;

@@ -15,7 +15,14 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
 import { parseYaml } from "@whisperwind/core";
-import { createProvider, ACTION_SCHEMA, validateDecision } from "@whisperwind/agent";
+import {
+  ClaimStore,
+  createProvider,
+  ACTION_SCHEMA,
+  loadMemory,
+  reflect,
+  validateDecision,
+} from "@whisperwind/agent";
 import { buildIsland, initPhysics, observe, runRound, startChain, stateDigest } from "@whisperwind/sim";
 import type { ActionSequence, AgentSpec, Observation } from "@whisperwind/core";
 
@@ -26,6 +33,8 @@ const models = parseYaml(readFileSync(modelsPath, "utf8"));
 
 const roundsArg = process.argv.indexOf("--rounds");
 const ROUNDS = roundsArg >= 0 ? Number(process.argv[roundsArg + 1]) : 4;
+/** Reflection costs one extra request per agent per day; opt in with --reflect. */
+const DO_REFLECT = process.argv.includes("--reflect");
 
 const agents = parseAgents(models);
 const runId = `live-${new Date().toISOString().replace(/[:.]/g, "-")}`;
@@ -88,15 +97,22 @@ interface Decider {
   spec: AgentSpec;
 }
 
-async function decide(d: Decider, obs: Observation, maxRepairs = 1): Promise<{
+async function decide(
+  d: Decider,
+  obs: Observation,
+  memoryPrefix: string,
+  maxRepairs = 1,
+): Promise<{
   actions: ActionSequence;
   invalid: boolean;
   tokens?: { prompt: number; completion: number };
   wallMs: number;
 }> {
+  // Stable prefix first (soul + memory), volatile tail last, so provider prompt caching
+  // can hit on the part that does not change between rounds.
   const messages = [
     { role: "system" as const, content: SYSTEM },
-    { role: "user" as const, content: `Observation:\n${JSON.stringify(obs)}\n\nWhat do you do?` },
+    { role: "user" as const, content: `${memoryPrefix}\nObservation:\n${JSON.stringify(obs)}\n\nWhat do you do?` },
   ];
 
   let totalPrompt = 0;
@@ -167,6 +183,34 @@ const events: unknown[] = [];
 const lastResults = new Map<string, string | null>();
 let tick = 0;
 
+// One claims database per run, one workspace per agent. The store is shared because
+// adoption is a relation between agents, not a per-agent fact.
+mkdirSync(runDir, { recursive: true });
+const claims = new ClaimStore(join(runDir, "claims.db"));
+const workspaceFor = (name: string): string => join(runDir, "agents", name, "workspace");
+
+/** Prompt prefix: the agent's memory as it stands now. Rebuilt each round. */
+function memoryPrefix(name: string): string {
+  const all = claims.all();
+  const snapshot = loadMemory(workspaceFor(name), all, name, 8);
+  return [
+    "## Your memory",
+    "",
+    snapshot.semantic.trim(),
+    "",
+    "## Recently, in your own words",
+    "",
+    snapshot.recent.length > 0
+      ? snapshot.recent.map((e) => `- (day ${e.day}) ${e.summary}`).join("\n")
+      : "Nothing recorded yet.",
+    "",
+  ].join("\n");
+}
+
+/** What each agent did today, for the reflection pass. */
+const daySummaries = new Map<string, string[]>();
+for (const d of deciders) daySummaries.set(d.name, []);
+
 let invalidTotal = 0;
 const startedAt = performance.now();
 
@@ -181,7 +225,7 @@ for (let round = 0; round < ROUNDS; round++) {
         unreadChat: 0,
         lastResults,
       });
-      const decision = await decide(d, obs);
+      const decision = await decide(d, obs, memoryPrefix(d.name));
       if (decision.invalid) invalidTotal++;
       return { agent: d.name, decision, action: decision.actions[0]?.type ?? "none" };
     }),
@@ -207,6 +251,11 @@ for (let round = 0; round < ROUNDS; round++) {
       rec.agent,
       first ? `${rec.action[0]?.type ?? "?"} ${first.ok ? "ok" : first.reason}` : null,
     );
+    const summary = daySummaries.get(rec.agent);
+    if (summary && rec.action[0]) {
+      const outcome = first ? (first.ok ? "worked" : `failed: ${first.reason}`) : "no result";
+      summary.push(`${rec.action.map((a) => a.type).join(" then ")} ${outcome}`);
+    }
     events.push(rec);
   }
 
@@ -224,8 +273,38 @@ for (let round = 0; round < ROUNDS; round++) {
   );
 }
 
+// Reflection at end of day. Opt-in because it costs one extra request per agent, and
+// deliberately not per-action: measured, a model asked to record beliefs after every
+// action narrates instead of calling a tool, and the request count doubles.
+const reflections: unknown[] = [];
+if (DO_REFLECT) {
+  const boardFor = deciders.map((_, i) => ({
+    id: `post_${i + 1}`,
+    agent: deciders[i]?.name ?? "?",
+    content: "(no posts yet this run)",
+  }));
+  for (const [i, d] of deciders.entries()) {
+    const idx = i;
+    const pos = island.agents[idx]?.body.translation();
+    const result = await reflect({
+      provider: d.provider,
+      model: d.spec.model,
+      think: d.spec.think,
+      agent: d.name,
+      day: 1,
+      tick,
+      workspaceDir: workspaceFor(d.name),
+      store: claims,
+      daySummary: daySummaries.get(d.name) ?? [],
+      endPosition: pos ? [pos.x, pos.y, pos.z] : [0, 0, 0],
+      board: boardFor,
+    });
+    reflections.push({ agent: d.name, ...result });
+    console.log(JSON.stringify({ reflect: d.name, events: result.eventsRecorded, claims: result.claimsRecorded, refuted: result.refuted.length, rejected: result.claimsRejected.length, ms: result.wallMs }));
+  }
+}
+
 const state = stateDigest(island);
-mkdirSync(runDir, { recursive: true });
 writeFileSync(join(runDir, "events.jsonl"), events.map((e) => JSON.stringify(e)).join("\n") + "\n");
 writeFileSync(join(runDir, "day-1.snap"), island.world.takeSnapshot());
 writeFileSync(
@@ -251,6 +330,21 @@ writeFileSync(
     2,
   ) + "\n",
 );
+writeFileSync(
+  join(runDir, "memory.json"),
+  JSON.stringify(
+    {
+      claims: claims.all().map((c) => ({
+        id: c.id, agent: c.agent, day: c.day, kind: c.kind, status: c.status,
+        confidence: c.confidence, source: c.source, evidence: c.evidence, text: c.text,
+      })),
+      reflections,
+    },
+    null,
+    2,
+  ) + "\n",
+);
+claims.close();
 writeFileSync(
   join(runDir, "digest.json"),
   JSON.stringify({ rounds: ROUNDS, chain, terminalState: state, invalidTotal }, null, 2) + "\n",

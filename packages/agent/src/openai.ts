@@ -65,22 +65,26 @@ export class OpenAIProvider implements Provider {
 
     let value: unknown = null;
     let content = "";
+    let toolName: string | undefined;
+    let toolArguments: unknown = undefined;
     if (message) {
       content = readString(message, "content") ?? "";
       const calls = message["tool_calls"];
       if (Array.isArray(calls) && calls.length > 0) {
         const call = asRecord(calls[0]);
         const fn = call ? asRecord(call["function"]) : null;
+        toolName = fn ? readString(fn, "name") : undefined;
         const args = fn ? fn["arguments"] : undefined;
         if (typeof args === "string") {
           try {
-            value = JSON.parse(args);
+            toolArguments = JSON.parse(args);
           } catch {
-            value = args;
+            toolArguments = args;
           }
         } else {
-          value = args;
+          toolArguments = args;
         }
+        value = toolArguments;
       } else {
         const cleaned = stripFence(content);
         try {
@@ -97,6 +101,7 @@ export class OpenAIProvider implements Provider {
 
     return {
       value,
+      toolCall: toolName !== undefined ? { name: toolName, arguments: toolArguments ?? null } : null,
       text: content,
       ...(promptTokens !== undefined ? { promptTokens } : {}),
       ...(completionTokens !== undefined ? { completionTokens } : {}),
