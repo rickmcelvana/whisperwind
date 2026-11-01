@@ -45,6 +45,11 @@ or anything containing an API key.
   defers to measurement.
 - Split work so no two sub-agents edit the same file. Shared interfaces (types, the
   action schema, the event record) are fixed by the architect before delegation.
+- **Do not start editing a directory you have delegated.** If a sub-agent owns
+  `packages/x`, the architect does not also write `packages/x` in the same session.
+  Observed once: both wrote `src/server.ts`, the sub-agent's version overwrote a
+  passing implementation, and the tests went from 11 passing to a module load error.
+  If a delegated agent is slow, wait or kill it — do not race it.
 
 ## Documentation discipline
 

@@ -58,9 +58,9 @@ Both model endpoints are optional. A run records which were reachable.
 
 ## Status
 
-Design and verification complete; workspace bootstrapped. `packages/core` holds the
-frozen contracts and a YAML reader; the other five packages are skeletons. No world
-behaviour yet.
+Core loop is working end to end. The sim, HTTP surface, agent layer and orchestrator
+exist and are tested; a live run of three different models records a chain that
+replays. Memory, claims and the viewer are not built.
 
 `docs/sessions/` holds the current state; the newest session doc's `Next` section is
 the task queue.

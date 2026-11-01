@@ -119,5 +119,6 @@ waiting to be reported.
 |---|---|---|---|
 | 01 | 2026-10-31 | research-and-plan | plan written; provider layer and M0 replay verified |
 | 02 | 2026-11-01 | bootstrap | workspace, contracts, world config; no world behaviour yet |
+| 03 | 2026-11-01 | sim-and-live-run | sim core, M0 replay, HTTP, agents, orchestrator; live 3-model run |
 
 Append a row when a session doc is created. Never renumber.
