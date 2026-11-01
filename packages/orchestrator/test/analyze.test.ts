@@ -131,3 +131,17 @@ test("a run written by the live runner exposes every artifact the analysis reads
     assert.ok(existsSync(join(runsDir, live, file)), `${live} is missing ${file}`);
   }
 });
+
+test("a run with claims but no judge reports judged as null, not as zero verdicts", () => {
+  // Zero verdicts and "no judge requested" are different facts. Conflating them would
+  // make an unjudged run look like a run where nothing was found.
+  const dir = join(tmpdir(), `ww-analyze-nojudge-${process.pid}`);
+  rmSync(dir, { recursive: true, force: true });
+  makeRun(dir);
+  const out = execFileSync(process.execPath, ["packages/orchestrator/bin/analyze.ts", dir], {
+    encoding: "utf8",
+  });
+  const report = JSON.parse(out) as { judged: unknown };
+  assert.equal(report.judged, null);
+  rmSync(dir, { recursive: true, force: true });
+});

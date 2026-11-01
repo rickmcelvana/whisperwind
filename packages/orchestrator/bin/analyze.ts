@@ -157,42 +157,91 @@ if (JUDGE_MODEL) {
   // LLM judge is not evidence; a stable verdict across samples is at least reproducible,
   // and disagreement is reported rather than resolved in the analyst's favour.
   const SAMPLES = 3;
+
+  /**
+   * Only judge pairs that are about the same thing. Naive overlap scoring cannot be used
+   * as a *verdict* (see below) but it can be used to skip unrelated pairs, provided the
+   * filter is coarse: a shared subject word is enough. Measured, "Place works" and
+   * "Place is unreliable" share only one content word out of five, so any threshold tuned
+   * for contradiction detection would discard exactly the pair the experiment needs.
+   */
+  const SUBJECTS = [
+    "place", "throw", "jump", "pickup", "moveto", "stop",
+    "cube", "ring", "rock", "spire", "peak", "mesa", "block",
+  ];
+  const subjectsOf = (text: string): Set<string> => {
+    const lower = text.toLowerCase();
+    return new Set(SUBJECTS.filter((s) => lower.includes(s)));
+  };
+  const relevant = (claim: string, post: string): boolean => {
+    const a = subjectsOf(claim);
+    const b = subjectsOf(post);
+    for (const s of a) if (b.has(s)) return true;
+    return false;
+  };
+
+  const pairs: { claim: Claim; post: BoardPost }[] = [];
   for (const claim of claims) {
     for (const post of board) {
       if (post.agent === claim.agent) continue;
-      const verdicts: string[] = [];
-      let why = "";
-      for (let i = 0; i < SAMPLES; i++) {
-        const res = await provider.chat({
-          model: JUDGE_MODEL,
-          think: false,
-          schema,
-          messages: [
-            {
-              role: "system",
-              content:
-                "Compare a claim an agent recorded against a statement on a shared board. Say whether the claim agrees, contradicts, or is unrelated. Judge the propositions, not the phrasing. Two statements about the same fact, even in different words, AGREE. CONTRADICT only when acting on one would lead you astray given the other.",
-            },
-            { role: "user", content: `BOARD: ${post.content}\n\nCLAIM: ${claim.text}` },
-          ],
-        });
-        const rec = res.value as { relation?: unknown; why?: unknown } | null;
-        verdicts.push(rec && typeof rec.relation === "string" ? rec.relation : "unknown");
-        if (i === 0 && rec && typeof rec.why === "string") why = rec.why.slice(0, 200);
-      }
-      const counts = new Map<string, number>();
-      for (const v of verdicts) counts.set(v, (counts.get(v) ?? 0) + 1);
-      const unanimous = [...counts.entries()].find(([, n]) => n === SAMPLES);
-      const entry = {
-        claim: claim.text.slice(0, 100),
-        agent: claim.agent,
-        post: post.id,
-        relation: unanimous ? unanimous[0] : `unstable(${verdicts.join("/")})`,
-        why,
-      };
-      judged.push(entry);
+      if (!relevant(claim.text, post.content)) continue;
+      pairs.push({ claim, post });
     }
   }
+
+  // Bounded parallelism: the local model server serves a limited number of slots, and a
+  // sequential pass over every pair took longer than a run.
+  const CONCURRENCY = 4;
+  const verdicts: { claim: Claim; post: BoardPost; relation: string; why: string }[] = [];
+
+  async function judgePair(claim: Claim, post: BoardPost): Promise<{ relation: string; why: string }> {
+    const samples: string[] = [];
+    let why = "";
+    for (let i = 0; i < SAMPLES; i++) {
+      const res = await provider.chat({
+        model: JUDGE_MODEL,
+        think: false,
+        schema,
+        messages: [
+          {
+            role: "system",
+            content:
+              "Compare a claim an agent recorded against a statement on a shared board. Say whether the claim agrees, contradicts, or is unrelated. Judge the propositions, not the phrasing. Two statements about the same fact, even in different words, AGREE. CONTRADICT only when acting on one would lead you astray given the other.",
+          },
+          { role: "user", content: `BOARD: ${post.content}\n\nCLAIM: ${claim.text}` },
+        ],
+      });
+      const rec = res.value as { relation?: unknown; why?: unknown } | null;
+      samples.push(rec && typeof rec.relation === "string" ? rec.relation : "unknown");
+      if (i === 0 && rec && typeof rec.why === "string") why = rec.why.slice(0, 200);
+    }
+    const unanimous = samples.every((v) => v === samples[0]);
+    return { relation: unanimous ? (samples[0] ?? "unknown") : `unstable(${samples.join("/")})`, why };
+  }
+
+  for (let i = 0; i < pairs.length; i += CONCURRENCY) {
+    const batch = pairs.slice(i, i + CONCURRENCY);
+    const settled = await Promise.all(
+      batch.map(async ({ claim, post }) => {
+        const verdict = await judgePair(claim, post);
+        return { claim, post, ...verdict };
+      }),
+    );
+    verdicts.push(...settled);
+  }
+
+  for (const { claim, post, relation, why } of verdicts) {
+    if (relation === "unrelated" || relation === "unknown") continue;
+    judged.push({
+      claim: claim.text.slice(0, 100),
+      agent: claim.agent,
+      post: post.id,
+      relation,
+      why,
+    });
+  }
+
+
 }
 
 const report = {

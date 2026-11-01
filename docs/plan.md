@@ -487,6 +487,15 @@ now samples each pair three times and reports only unanimous verdicts, with the
 disagreements surfaced as `unstable` rather than resolved. Declared provenance remains
 the only thing counted as adoption; judge output is inference and labelled as such.
 
+Two constraints on running it. Sequentially judging every cross-author pair took longer
+than the run itself (35 pairs × 3 samples = 105 requests), so pairs are filtered to those
+sharing a subject word (`place`, `throw`, `ring`, …) and judged four at a time: 35 → 12
+pairs, 105 → 36 requests, 89 s for a real run. The filter is deliberately coarse: it only
+decides whether two statements are about the same thing, never whether they agree, because
+a threshold tuned for agreement would discard exactly the pairs the experiment needs.
+Even so, 2 of 12 judged pairs came back `unstable`, which is the real precision limit of
+this instrument and the reason no adoption rate is reported. 
+
 **A round has one chain, not one per agent.** The HTTP-driven runner first took each
 agent's own post-action snapshot, so a single round was recorded with three different
 `state` and `chain` values. Replay reported a mismatch at round 0 while the physics had

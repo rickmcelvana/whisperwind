@@ -42,6 +42,9 @@ mind to another is recorded rather than inferred.
 | A single-pass judge is unreliable | 3 hand-picked pairs, then a real run | correct on the pairs; in the run returned `contradict` with a `why` saying the statements "semantically match" |
 | Round records share one chain | 2-round run, inspect events.jsonl | 1 distinct chain per round, both rounds OK |
 | Full suite | `npm test` | 103 pass, typecheck clean |
+| Judge cost was prohibitive | sequential pass on a real run | 35 pairs × 3 samples = 105 requests, exceeded a 280 s limit |
+| Filtering and parallelism make it usable | subject-word filter + 4-way parallel | 35 → 12 pairs, 36 requests, 89 s |
+| Judge precision is the limit | same run | 3 agree, 1 contradict, **2 unstable** of 12 |
 
 ## Failed / rejected
 
@@ -58,7 +61,8 @@ mind to another is recorded rather than inferred.
   measurement by the judge.
 - **A judge verdict used as a measurement.** The judge contradicted its own explanation
   and called a restatement a contradiction. It now samples three times and reports only
-  unanimous verdicts, surfacing disagreement as `unstable`.
+  unanimous verdicts, surfacing disagreement as `unstable`. It remains unusable as a
+  headline number: 2 of 12 pairs did not stabilise even across three samples.
 - **A dynamic import in a test.** Rule violation: a literal specifier belongs in a static
   import. Fixed.
 - **TypeScript written into a `.mjs` scratch file**, twice. Scratch scripts now go through
@@ -94,6 +98,9 @@ failure.
 2. The seeded post was authored by agent A, so A "seeded" a belief it had not formed. A
    cleaner design seeds it from outside the agents, which needs a server-side operator
    endpoint rather than a hijacked agent.
+4. The judge cannot be the measurement instrument at 2/12 unstable. Declared provenance is
+   the reliable signal; everything else needs either a better judge (more samples, a
+   stronger model, a stricter rubric) or a probe that tests the belief against the world.
 3. Whether `post` should be offered every round at all: three posts per round filled the
    board with narration ("Heading towards the Ring"). A rate limit or a "worth recording"
    prompt constraint would make the board a belief channel rather than a chat log.
