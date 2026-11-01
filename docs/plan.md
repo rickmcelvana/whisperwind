@@ -52,6 +52,30 @@ Secondary question, from `ideas.md`: with identical world seeds, how far apart d
 different mind *tiers* drift, and does the divergence come from what they can do
 or from what they choose to do?
 
+## 2.1 Toolchain (decided, verified)
+
+Node 24 runs `.ts` files directly by stripping types (`node file.ts`), so the project
+has **no build step**: no bundler, no `dist/`, no watch mode. Verified on this machine:
+
+| Capability | Result |
+|---|---|
+| `node main.ts` with cross-file imports | works |
+| npm workspaces + `node packages/app/main.ts` importing `@scope/pkg` | works; the symlinked package's `.ts` source is stripped |
+| `@dimforge/rapier3d-compat` WASM imported from a workspace package | works |
+| `node --test "packages/**/*.test.ts"` | works |
+| `node --test <directory>` (no glob) | **broken on Windows** (`MODULE_NOT_FOUND`); always pass a glob |
+| `tsc --noEmit` | clean, and exits 2 on error |
+
+Type stripping only erases syntax; it does not transform it. Two consequences, both
+enforced by `tsconfig` (`erasableSyntaxOnly`):
+
+- **No `enum`** — use `as const` unions (see `packages/core/src/contracts.ts`).
+- **No parameter properties** (`constructor(private x: T)`) — declare and assign.
+
+Both were verified to fail at *runtime* under `node file.ts` while `tsc` reports
+`TS1294`. That is why `npm test` runs `tsc --noEmit` first: a type error is not a
+build error here, so without that gate a broken file still "runs" until it crashes.
+
 ## 3. Architecture
 
 ```mermaid

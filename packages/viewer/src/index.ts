@@ -1,0 +1,4 @@
+/**
+ * Viewer entry point.
+ */
+export {};

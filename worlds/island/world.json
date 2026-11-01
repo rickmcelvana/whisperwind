@@ -1,0 +1,215 @@
+{
+  "name": "island",
+  "description": "A small island with mesas, a peak, a taller spire, twelve cubes, a rock and a ring. No objective.",
+  "seed": 1,
+  "motion": {
+    "walkSpeed": 4.5,
+    "jumpSeconds": 0.5,
+    "pickupSeconds": 2,
+    "placeSeconds": 2,
+    "throwSeconds": 1,
+    "tickRate": 60
+  },
+  "spawnRadius": 6,
+  "bounds": {
+    "halfExtent": 120,
+    "groundY": 0
+  },
+  "sky": {
+    "dayTicks": 12000
+  },
+  "mesas": [
+    {
+      "name": "SmallPlateau",
+      "position": [
+        -30,
+        2,
+        28
+      ],
+      "halfExtents": [
+        5,
+        1,
+        4
+      ]
+    },
+    {
+      "name": "Mesa_2",
+      "position": [
+        -10,
+        2,
+        20
+      ],
+      "halfExtents": [
+        4,
+        1,
+        4
+      ]
+    },
+    {
+      "name": "Mesa_3",
+      "position": [
+        8,
+        3,
+        24
+      ],
+      "halfExtents": [
+        4,
+        1.5,
+        4
+      ]
+    },
+    {
+      "name": "Mesa_4",
+      "position": [
+        26,
+        2,
+        18
+      ],
+      "halfExtents": [
+        5,
+        1,
+        5
+      ]
+    },
+    {
+      "name": "Mesa_5",
+      "position": [
+        -26,
+        4,
+        2
+      ],
+      "halfExtents": [
+        4,
+        2,
+        4
+      ]
+    },
+    {
+      "name": "Mesa_6",
+      "position": [
+        -18,
+        3,
+        0
+      ],
+      "halfExtents": [
+        6,
+        1.5,
+        3
+      ]
+    },
+    {
+      "name": "Mesa_7",
+      "position": [
+        14,
+        2,
+        -4
+      ],
+      "halfExtents": [
+        4,
+        1,
+        6
+      ]
+    },
+    {
+      "name": "Mesa_8",
+      "position": [
+        30,
+        5,
+        -18
+      ],
+      "halfExtents": [
+        4,
+        2.5,
+        4
+      ]
+    },
+    {
+      "name": "Mesa_9",
+      "position": [
+        -16,
+        6,
+        -22
+      ],
+      "halfExtents": [
+        5,
+        3,
+        5
+      ]
+    },
+    {
+      "name": "Peak",
+      "position": [
+        4,
+        8,
+        -30
+      ],
+      "halfExtents": [
+        6,
+        4,
+        6
+      ]
+    },
+    {
+      "name": "Spire",
+      "position": [
+        -34,
+        13,
+        -26
+      ],
+      "halfExtents": [
+        3,
+        6.5,
+        3
+      ]
+    }
+  ],
+  "entities": [
+    {
+      "name": "Rock_1",
+      "kind": "rock",
+      "position": [
+        -30.6,
+        3,
+        26.9
+      ],
+      "halfExtents": [
+        1.1,
+        1.1,
+        1.1
+      ]
+    },
+    {
+      "name": "Ring_1",
+      "kind": "ring",
+      "position": [
+        10,
+        1.5,
+        10
+      ],
+      "halfExtents": [
+        0.9,
+        0.9,
+        0.9
+      ]
+    }
+  ],
+  "cubes": {
+    "count": 12,
+    "halfExtents": [
+      0.75,
+      0.75,
+      0.75
+    ],
+    "firstPosition": [
+      0,
+      1.5,
+      6
+    ],
+    "spacing": [
+      3,
+      0,
+      3
+    ],
+    "perRow": 4
+  }
+}

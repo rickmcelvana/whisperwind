@@ -58,5 +58,9 @@ Both model endpoints are optional. A run records which were reachable.
 
 ## Status
 
-Design and verification complete, implementation not started. `docs/sessions/`
-holds the current state; the newest session doc's `Next` section is the task queue.
+Design and verification complete; workspace bootstrapped. `packages/core` holds the
+frozen contracts and a YAML reader; the other five packages are skeletons. No world
+behaviour yet.
+
+`docs/sessions/` holds the current state; the newest session doc's `Next` section is
+the task queue.

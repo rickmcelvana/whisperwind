@@ -1,0 +1,35 @@
+# Provider and agent configuration.
+#
+# No model name appears in code. Swapping a mind is an edit to this file, and every
+# capability is probed at run start and recorded in the run manifest.
+
+providers:
+  ollama:
+    kind: ollama # native /api/chat, /api/embed
+    baseUrl: http://127.0.0.1:11434
+  llamacpp:
+    kind: openai # /v1/chat/completions
+    baseUrl: http://192.168.40.247:8080/v1
+
+# Probe results recorded 2026-11-01. These are expectations, not configuration: the
+# orchestrator re-probes every run and the manifest records what it actually found.
+notes:
+  ollama:
+    - "think is honoured only on native /api/chat; through /v1 it is silently ignored"
+    - "cloud models may return NDJSON even with stream:false"
+    - "sending tools without format produced 100% invalid actions on gemma4"
+    - "format without tools is ignored by glm-5.2:cloud"
+
+agents:
+  - name: A
+    provider: ollama
+    model: glm-5.2:cloud
+    think: false
+  - name: B
+    provider: ollama
+    model: qwen3.5:9b
+    think: false
+  - name: C
+    provider: ollama
+    model: gemma4:12b-it-qat
+    think: false

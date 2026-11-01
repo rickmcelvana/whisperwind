@@ -1,0 +1,24 @@
+{
+  "name": "whisperwind",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "tsc --noEmit && node --test \"packages/**/*.test.ts\"",
+    "test:only": "node --test \"packages/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "replay": "node packages/orchestrator/src/cli/replay.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "0.21.0"
+  }
+}

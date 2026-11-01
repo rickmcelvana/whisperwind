@@ -118,5 +118,6 @@ waiting to be reported.
 | # | Date | Slug | Outcome |
 |---|---|---|---|
 | 01 | 2026-10-31 | research-and-plan | plan written; provider layer and M0 replay verified |
+| 02 | 2026-11-01 | bootstrap | workspace, contracts, world config; no world behaviour yet |
 
 Append a row when a session doc is created. Never renumber.

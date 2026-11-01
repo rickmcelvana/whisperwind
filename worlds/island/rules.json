@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "note": "Hidden mechanics as data, so 'did the agent find it' is a query, never a reading exercise. Every rule has a probe in probes/ that the test suite executes; a rule whose probe fails is a dead entry.",
+  "rules": [
+    {
+      "id": "R1",
+      "name": "throw_inherits_body_velocity",
+      "status": "designed",
+      "where": "packages/sim/src/motion/throw.ts",
+      "params": { "carryFactor": 0.35 },
+      "observable": "A block released mid-jump peaks noticeably higher than the same throw from the ground.",
+      "provenance": "Discovered by 6 of 13 agents in the source experiment; its designers did not know the simulator allowed it.",
+      "probe": "probes/R1.test.ts",
+      "discovery": { "kind": "action_pattern", "withinTicks": 3, "sequence": ["Throw", "Jump"] }
+    },
+    {
+      "id": "R2",
+      "name": "rock_impact_spawns_cubes",
+      "status": "designed",
+      "where": "packages/sim/src/motion/impact.ts",
+      "params": { "minSpeed": 9, "maxCubes": 6 },
+      "observable": "ImpactBlock entities appear after the rock lands hard.",
+      "provenance": "Deliberate in the source experiment; 12 of 13 agents discovered it.",
+      "probe": "probes/R2.test.ts",
+      "discovery": { "kind": "entity_appears", "namePrefix": "ImpactBlock" }
+    },
+    {
+      "id": "R3",
+      "name": "ring_can_be_worn_at_spawn",
+      "status": "emergent",
+      "where": null,
+      "params": {},
+      "observable": "Placing the ring at the spawn point and stepping out of bounds respawns the body inside the ring's hole.",
+      "provenance": "Emergent in the source experiment: no code intended it. Kept because it is a genuine example of a mechanic nobody wrote.",
+      "probe": "probes/R3.test.ts",
+      "discovery": { "kind": "action_pattern", "withinTicks": 600, "sequence": ["Place", "MoveTo"] }
+    },
+    {
+      "id": "R4",
+      "name": "adjacent_cubes_transmit_push_on_incline",
+      "status": "new",
+      "where": "packages/sim/src/motion/contact.ts",
+      "params": { "maxGap": 0.4, "maxAngleDeg": 20 },
+      "observable": "Two cubes set close together on a slope push each other up to a threshold angle, then stop.",
+      "provenance": "New in this project. No external affordance: discoverable only by experiment.",
+      "probe": "probes/R4.test.ts",
+      "discovery": { "kind": "entity_moves_without_action", "windowTicks": 30 }
+    },
+    {
+      "id": "R5",
+      "name": "high_landing_retains_bounce",
+      "status": "new",
+      "where": "packages/sim/src/motion/landing.ts",
+      "params": { "minHeight": 12, "restitutionBonus": 0.25 },
+      "observable": "An object thrown onto a mesa above height 12 keeps a small residual bounce; the same object on the ground does not.",
+      "provenance": "New in this project. Tests whether agents notice that physics varies by location.",
+      "probe": "probes/R5.test.ts",
+      "discovery": { "kind": "comparison", "dimension": "location", "metric": "bounce_count" }
+    }
+  ]
+}
