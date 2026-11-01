@@ -1,0 +1,21 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Run output: recordings, snapshots, agent workspaces, logs
+runs/
+*.snap
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Editor and OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Model weights, if any land here
+*.gguf
