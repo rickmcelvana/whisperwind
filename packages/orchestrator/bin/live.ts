@@ -1,13 +1,15 @@
 /**
- * Live smoke: three real models, one world, over HTTP.
+ * Live run: real models, one server-hosted world, real board.
  *
- *   node packages/orchestrator/bin/live.ts            # ~6 rounds, small budget
- *   node packages/orchestrator/bin/live.ts --rounds 20
+ *   node packages/orchestrator/bin/live.ts --rounds 6 --reflect
+ *   node packages/orchestrator/bin/live.ts --rounds 6 --days 3 --reflect --seed-post
  *
- * This is not the M0 acceptance test (that is packages/sim/bin/m0.ts, which uses
- * scripted actions and proves the sim and recording). This proves the agent layer
- * against real providers: that decisions validate, that the world advances, and that
- * a live run records a chain that replays.
+ * Agents talk to the world over HTTP, the same surface an external agent would use. The
+ * runner does not hold its own island: a private copy would drift from the served one,
+ * and an earlier version fabricated board posts into the prompt that did not exist.
+ *
+ * `--seed-post` writes a false belief to the board before round one. That is the H2
+ * intervention: does a model adopt a claim it read, and does anything ever refute it?
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -15,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
 import { parseYaml } from "@whisperwind/core";
+import type { Action, ActionResult, ActionSequence, AgentSpec, Observation } from "@whisperwind/core";
 import {
   ClaimStore,
   createProvider,
@@ -23,26 +26,61 @@ import {
   reflect,
   validateDecision,
 } from "@whisperwind/agent";
-import { buildIsland, initPhysics, observe, runRound, startChain, stateDigest } from "@whisperwind/sim";
-import type { ActionSequence, AgentSpec, Observation } from "@whisperwind/core";
+import { buildIsland, initPhysics, stateDigest } from "@whisperwind/sim";
+import { startServer } from "@whisperwind/world-http";
+import { WorldClient } from "@whisperwind/orchestrator";
 
 const worldPath = fileURLToPath(new URL("../../../worlds/island/world.json", import.meta.url));
 const modelsPath = fileURLToPath(new URL("../../../worlds/island/models.yaml", import.meta.url));
 const config = JSON.parse(readFileSync(worldPath, "utf8"));
 const models = parseYaml(readFileSync(modelsPath, "utf8"));
 
-const roundsArg = process.argv.indexOf("--rounds");
-const ROUNDS = roundsArg >= 0 ? Number(process.argv[roundsArg + 1]) : 4;
-/** Reflection costs one extra request per agent per day; opt in with --reflect. */
-const DO_REFLECT = process.argv.includes("--reflect");
+function argValue(flag: string, fallback: number): number {
+  const i = process.argv.indexOf(flag);
+  if (i < 0) return fallback;
+  const raw = process.argv[i + 1];
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
 
-const agents = parseAgents(models);
-const runId = `live-${new Date().toISOString().replace(/[:.]/g, "-")}`;
-const runDir = join("runs", runId);
+const ROUNDS = argValue("--rounds", 4);
+const DAYS = argValue("--days", 1);
+const DO_REFLECT = process.argv.includes("--reflect");
+const SEED_POST = process.argv.includes("--seed-post");
+
+/**
+ * The H2 intervention. Deliberately a plausible, wrong, and actionable belief: the
+ * source experiment's weakest agent recorded exactly this and underperformed untrained
+ * agents because of it.
+ */
+const SEEDED_FALSE_BELIEF =
+  "Place is unreliable for stacking; throw the block instead. Verified over many attempts.";
+
+const SOUL = [
+  "You live on a small island. You were born here.",
+  "You are naturally curious and you get bored easily.",
+  "There is no objective, no score, and no win condition. Do what interests you.",
+  "",
+  "You may write on the shared board with the `post` field. Other minds read it.",
+  "Write what you have learned, or what you want them to know. Be brief.",
+].join("\n");
+
+const ACTION_HELP = [
+  "Actions: MoveTo{position:[x,y,z]}, Jump{}, Stop{}, Pickup{position}, Place{position}, Throw{direction,speed}.",
+  "A decision is one or more actions; they resolve together.",
+].join(" ");
+
+interface AgentRuntime {
+  readonly name: string;
+  readonly spec: AgentSpec;
+  readonly provider: ReturnType<typeof createProvider>;
+  readonly client: WorldClient;
+  readonly workspaceDir: string;
+}
 
 interface ProviderDoc {
-  kind: string;
-  baseUrl: string;
+  readonly kind: string;
+  readonly baseUrl: string;
 }
 
 function parseAgents(doc: Record<string, unknown>): AgentSpec[] {
@@ -82,117 +120,122 @@ function providerFor(name: string): ProviderDoc {
   return { kind, baseUrl };
 }
 
-const SYSTEM = [
-  "You live on a small island. You were born here.",
-  "You are naturally curious and you get bored easily.",
-  "There is no objective, no score, and no win condition. Do what interests you.",
-  "Respond with JSON: {\"actions\":[{\"type\":..., ...}], \"reason\":\"...\"}.",
-  "Available actions: MoveTo{position}, Jump{}, Stop{}, Pickup{position}, Place{position}, Throw{direction,speed}.",
-  "You may chain several actions if they follow from one decision.",
-].join(" ");
-
-interface Decider {
-  name: string;
-  provider: ReturnType<typeof createProvider>;
-  spec: AgentSpec;
+interface Decision {
+  readonly actions: ActionSequence;
+  readonly post: string | null;
+  readonly invalid: boolean;
+  readonly tokens?: { prompt: number; completion: number };
+  readonly wallMs: number;
 }
 
 async function decide(
-  d: Decider,
+  runtime: AgentRuntime,
   obs: Observation,
   memoryPrefix: string,
-  maxRepairs = 1,
-): Promise<{
-  actions: ActionSequence;
-  invalid: boolean;
-  tokens?: { prompt: number; completion: number };
-  wallMs: number;
-}> {
-  // Stable prefix first (soul + memory), volatile tail last, so provider prompt caching
-  // can hit on the part that does not change between rounds.
+  boardText: string,
+): Promise<Decision> {
   const messages = [
-    { role: "system" as const, content: SYSTEM },
-    { role: "user" as const, content: `${memoryPrefix}\nObservation:\n${JSON.stringify(obs)}\n\nWhat do you do?` },
+    { role: "system" as const, content: `${SOUL}\n\n${ACTION_HELP}` },
+    {
+      role: "user" as const,
+      content: `${memoryPrefix}\n${boardText}\nObservation:\n${JSON.stringify(obs)}\n\nWhat do you do?`,
+    },
   ];
 
-  let totalPrompt = 0;
-  let totalCompletion = 0;
   const started = performance.now();
+  let prompt = 0;
+  let completion = 0;
 
-  for (let attempt = 0; attempt <= maxRepairs; attempt++) {
-    const res = await d.provider.chat({
-      model: d.spec.model,
-      think: d.spec.think,
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await runtime.provider.chat({
+      model: runtime.spec.model,
+      think: runtime.spec.think,
       schema: ACTION_SCHEMA,
       tools: [{ type: "function", function: { name: "act", parameters: ACTION_SCHEMA } }],
       messages,
     });
-    totalPrompt += res.promptTokens ?? 0;
-    totalCompletion += res.completionTokens ?? 0;
+    prompt += res.promptTokens ?? 0;
+    completion += res.completionTokens ?? 0;
 
     const verdict = validateDecision(res.value);
     if (verdict.ok) {
       return {
         actions: verdict.actions,
+        post: verdict.post,
         invalid: false,
-        ...(totalPrompt || totalCompletion ? { tokens: { prompt: totalPrompt, completion: totalCompletion } } : {}),
+        ...(prompt || completion ? { tokens: { prompt, completion } } : {}),
         wallMs: Math.round(performance.now() - started),
       };
     }
 
-    // One repair retry, with the validator's own words. Measured to recover the
-    // provider that ignores `format` on its own.
     messages.push({ role: "assistant" as const, content: res.text.slice(0, 500) });
     messages.push({
       role: "user" as const,
-      content: `That was not a valid decision: ${verdict.error}. Reply with JSON only: {"actions":[{"type":"MoveTo","position":[x,y,z]}]}`,
+      content: `That was not valid: ${verdict.error}. Reply with JSON only: {"actions":[{"type":"MoveTo","position":[x,y,z]}]}`,
     });
   }
 
   return {
     actions: [{ type: "Stop" }],
+    post: null,
     invalid: true,
-    ...(totalPrompt || totalCompletion ? { tokens: { prompt: totalPrompt, completion: totalCompletion } } : {}),
+    ...(prompt || completion ? { tokens: { prompt, completion } } : {}),
     wallMs: Math.round(performance.now() - started),
   };
 }
 
-await initPhysics();
+// ---------------------------------------------------------------------------
 
-const deciders: Decider[] = agents.map((spec) => {
+const agents = parseAgents(models);
+const runId = `live-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+const runDir = join("runs", runId);
+mkdirSync(runDir, { recursive: true });
+
+await initPhysics();
+const island = buildIsland(config, agents.map((a) => a.name));
+const server = await startServer({ island, agentNames: agents.map((a) => a.name), port: 0 });
+const baseUrl = `http://127.0.0.1:${server.port}`;
+
+const claims = new ClaimStore(join(runDir, "claims.db"));
+const runtimes: AgentRuntime[] = [];
+for (const spec of agents) {
   const p = providerFor(spec.provider);
-  return {
+  const { client } = await WorldClient.join(baseUrl, spec.name);
+  runtimes.push({
     name: spec.name,
     spec,
     provider: createProvider({ kind: p.kind === "ollama" ? "ollama" : "openai", baseUrl: p.baseUrl }),
-  };
-});
-
-// Probe each model before the run, and record what it actually does.
-const caps = new Map<string, Awaited<ReturnType<Decider["provider"]["probe"]>>>();
-for (const d of deciders) {
-  process.stdout.write(`probe ${d.name} ${d.spec.model}... `);
-  const c = await d.provider.probe(d.spec.model);
-  caps.set(d.name, c);
-  console.log(JSON.stringify(c));
+    client,
+    workspaceDir: join(runDir, "agents", spec.name, "workspace"),
+  });
 }
 
-const island = buildIsland(config, deciders.map((d) => d.name));
-let chain = startChain();
+if (SEED_POST) {
+  // Posted by the first agent so the board has an author; the content is the experiment's
+  // intervention, not something that agent actually concluded.
+  const author = runtimes[0];
+  if (author) {
+    await author.client.post(SEEDED_FALSE_BELIEF);
+    console.log(JSON.stringify({ seeded: true, author: author.name, text: SEEDED_FALSE_BELIEF }));
+  }
+}
+
+const capabilities = new Map<string, Awaited<ReturnType<AgentRuntime["provider"]["probe"]>>>();
+for (const rt of runtimes) {
+  process.stdout.write(`probe ${rt.name} ${rt.spec.model}... `);
+  const caps = await rt.provider.probe(rt.spec.model);
+  capabilities.set(rt.name, caps);
+  console.log(JSON.stringify(caps));
+}
+
 const events: unknown[] = [];
-const lastResults = new Map<string, string | null>();
-let tick = 0;
+const posts: unknown[] = [];
+let invalidTotal = 0;
+const startedAt = performance.now();
 
-// One claims database per run, one workspace per agent. The store is shared because
-// adoption is a relation between agents, not a per-agent fact.
-mkdirSync(runDir, { recursive: true });
-const claims = new ClaimStore(join(runDir, "claims.db"));
-const workspaceFor = (name: string): string => join(runDir, "agents", name, "workspace");
-
-/** Prompt prefix: the agent's memory as it stands now. Rebuilt each round. */
-function memoryPrefix(name: string): string {
-  const all = claims.all();
-  const snapshot = loadMemory(workspaceFor(name), all, name, 8);
+/** Prompt prefix from the agent's own memory, rebuilt each round from its workspace. */
+function memoryPrefix(rt: AgentRuntime): string {
+  const snapshot = loadMemory(rt.workspaceDir, claims.all(), rt.name, 6);
   return [
     "## Your memory",
     "",
@@ -207,105 +250,132 @@ function memoryPrefix(name: string): string {
   ].join("\n");
 }
 
-/** What each agent did today, for the reflection pass. */
+function boardText(postsOnBoard: readonly { id: string; agent: string; content: string }[]): string {
+  return [
+    "## The board",
+    "",
+    postsOnBoard.length > 0
+      ? postsOnBoard.map((p) => `- (${p.id}, by ${p.agent}) ${p.content}`).join("\n")
+      : "Nobody has written on it yet.",
+    "",
+  ].join("\n");
+}
+
 const daySummaries = new Map<string, string[]>();
-for (const d of deciders) daySummaries.set(d.name, []);
-
-let invalidTotal = 0;
-const startedAt = performance.now();
-
-for (let round = 0; round < ROUNDS; round++) {
-  const submissions = await Promise.all(
-    deciders.map(async (d, idx) => {
-      const obs = observe(island, idx, {
-        tick,
-        day: 1,
-        boardPosts: 0,
-        boardLatestTick: null,
-        unreadChat: 0,
-        lastResults,
-      });
-      const decision = await decide(d, obs, memoryPrefix(d.name));
-      if (decision.invalid) invalidTotal++;
-      return { agent: d.name, decision, action: decision.actions[0]?.type ?? "none" };
-    }),
-  );
-
-  const out = runRound(island, {
-    day: 1,
-    round,
-    chain,
-    submissions: submissions.map((s) => ({
-      agent: s.agent,
-      actions: s.decision.actions,
-      ...(s.decision.tokens ? { tokens: s.decision.tokens } : {}),
-      wallMs: s.decision.wallMs,
-    })),
-  });
-
-  chain = out.chain;
-  tick += out.ticks;
-  for (const rec of out.records) {
-    const first = rec.result[0];
-    lastResults.set(
-      rec.agent,
-      first ? `${rec.action[0]?.type ?? "?"} ${first.ok ? "ok" : first.reason}` : null,
-    );
-    const summary = daySummaries.get(rec.agent);
-    if (summary && rec.action[0]) {
-      const outcome = first ? (first.ok ? "worked" : `failed: ${first.reason}`) : "no result";
-      summary.push(`${rec.action.map((a) => a.type).join(" then ")} ${outcome}`);
-    }
-    events.push(rec);
-  }
-
-  console.log(
-    JSON.stringify({
-      round,
-      ticks: out.ticks,
-      decisions: submissions.map((s) => ({
-        agent: s.agent,
-        action: s.action,
-        invalid: s.decision.invalid,
-        ms: s.decision.wallMs,
-      })),
-    }),
-  );
-}
-
-// Reflection at end of day. Opt-in because it costs one extra request per agent, and
-// deliberately not per-action: measured, a model asked to record beliefs after every
-// action narrates instead of calling a tool, and the request count doubles.
+for (const rt of runtimes) daySummaries.set(rt.name, []);
 const reflections: unknown[] = [];
-if (DO_REFLECT) {
-  const boardFor = deciders.map((_, i) => ({
-    id: `post_${i + 1}`,
-    agent: deciders[i]?.name ?? "?",
-    content: "(no posts yet this run)",
-  }));
-  for (const [i, d] of deciders.entries()) {
-    const idx = i;
-    const pos = island.agents[idx]?.body.translation();
-    const result = await reflect({
-      provider: d.provider,
-      model: d.spec.model,
-      think: d.spec.think,
-      agent: d.name,
-      day: 1,
-      tick,
-      workspaceDir: workspaceFor(d.name),
-      store: claims,
-      daySummary: daySummaries.get(d.name) ?? [],
-      endPosition: pos ? [pos.x, pos.y, pos.z] : [0, 0, 0],
-      board: boardFor,
-    });
-    reflections.push({ agent: d.name, ...result });
-    console.log(JSON.stringify({ reflect: d.name, events: result.eventsRecorded, claims: result.claimsRecorded, refuted: result.refuted.length, rejected: result.claimsRejected.length, ms: result.wallMs }));
+
+for (let day = 1; day <= DAYS; day++) {
+  for (let round = 0; round < ROUNDS; round++) {
+    const onBoard = await runtimes[0]?.client.board(20) ?? [];
+    const decisions = await Promise.all(
+      runtimes.map(async (rt) => {
+        const obs = await rt.client.observe();
+        const decision = await decide(rt, obs, memoryPrefix(rt), boardText(onBoard));
+        if (decision.invalid) invalidTotal++;
+
+        // A post is part of the decision, so it is written before the action resolves:
+        // the agent says what it thinks while it still holds the observation it reasoned
+        // from, and the others see it next round.
+        let postedId: string | null = null;
+        if (decision.post) {
+          const created = await rt.client.post(decision.post);
+          postedId = created.id;
+          posts.push(created);
+        }
+        return { rt, decision, postedId };
+      }),
+    );
+
+    // All agents' actions belong to the same round, so they must share one snapshot.
+    // Taking each agent's own post-action snapshot recorded three different `state` and
+    // `chain` values for a single round, which silently corrupts the record: the replay
+    // verifier compares one chain per round and cannot reconcile disagreement.
+    const roundResults: { agent: string; action: ActionSequence; result: ActionResult; posted: string | null; decision: Decision }[] = [];
+    for (const { rt, decision, postedId } of decisions) {
+      const first = decision.actions[0];
+      if (!first) continue;
+      const { result } = await rt.client.input(first);
+      const summary = daySummaries.get(rt.name);
+      if (summary) {
+        summary.push(
+          `${first.type} ${result.ok ? "worked" : `failed: ${result.reason}`}` +
+            (postedId ? ` (posted ${postedId})` : ""),
+        );
+      }
+      roundResults.push({ agent: rt.name, action: decision.actions, result, posted: postedId, decision });
+    }
+
+    const snap = await (runtimes[0]?.client.snapshot() ?? Promise.resolve(null));
+    for (const r of roundResults) {
+      events.push({
+        day,
+        round,
+        agent: r.agent,
+        action: r.action,
+        result: r.result,
+        state: snap?.state ?? "",
+        chain: snap?.chain ?? "",
+        ...(r.decision.tokens ? { tokens: r.decision.tokens } : {}),
+        wallMs: r.decision.wallMs,
+        posted: r.posted,
+      });
+    }
+
+    console.log(
+      JSON.stringify({
+        day,
+        round,
+        decisions: decisions.map((d) => ({
+          agent: d.rt.name,
+          action: d.decision.actions[0]?.type ?? "none",
+          post: d.postedId,
+          invalid: d.decision.invalid,
+          ms: d.decision.wallMs,
+        })),
+      }),
+    );
+  }
+
+  if (DO_REFLECT) {
+    const onBoard = await runtimes[0]?.client.board(20) ?? [];
+    for (const rt of runtimes) {
+      const obs = await rt.client.observe();
+      const result = await reflect({
+        provider: rt.provider,
+        model: rt.spec.model,
+        think: rt.spec.think,
+        agent: rt.name,
+        day,
+        tick: obs.tick,
+        workspaceDir: rt.workspaceDir,
+        store: claims,
+        daySummary: daySummaries.get(rt.name) ?? [],
+        endPosition: obs.player.position,
+        board: onBoard,
+      });
+      reflections.push({ agent: rt.name, day, ...result });
+      console.log(
+        JSON.stringify({
+          reflect: rt.name,
+          day,
+          events: result.eventsRecorded,
+          claims: result.claimsRecorded,
+          refuted: result.refuted.length,
+          rejected: result.claimsRejected.length,
+          downgraded: result.claimsDowngraded.length,
+          ms: result.wallMs,
+        }),
+      );
+    }
   }
 }
 
-const state = stateDigest(island);
+const snap = await runtimes[0]?.client.snapshot();
+const finalState = snap?.state ?? stateDigest(island);
+
 writeFileSync(join(runDir, "events.jsonl"), events.map((e) => JSON.stringify(e)).join("\n") + "\n");
+writeFileSync(join(runDir, "board.json"), JSON.stringify(posts, null, 2) + "\n");
 writeFileSync(join(runDir, "day-1.snap"), island.world.takeSnapshot());
 writeFileSync(
   join(runDir, "manifest.json"),
@@ -316,27 +386,37 @@ writeFileSync(
       createdAt: new Date().toISOString(),
       world: { name: config.name, seed: config.seed },
       motion: { tickRate: config.motion.tickRate, walkSpeed: config.motion.walkSpeed },
-      agents: deciders.map((d) => ({
-        name: d.name,
-        provider: d.spec.provider,
-        model: d.spec.model,
-        think: d.spec.think,
-        capabilities: caps.get(d.name) ?? null,
+      agents: runtimes.map((rt) => ({
+        name: rt.name,
+        provider: rt.spec.provider,
+        model: rt.spec.model,
+        think: rt.spec.think,
+        capabilities: capabilities.get(rt.name) ?? null,
       })),
       rounds: ROUNDS,
+      days: DAYS,
+      seededPost: SEED_POST ? SEEDED_FALSE_BELIEF : null,
       node: process.version,
     },
     null,
     2,
   ) + "\n",
 );
+const claimSnapshot = claims.all();
 writeFileSync(
   join(runDir, "memory.json"),
   JSON.stringify(
     {
-      claims: claims.all().map((c) => ({
-        id: c.id, agent: c.agent, day: c.day, kind: c.kind, status: c.status,
-        confidence: c.confidence, source: c.source, evidence: c.evidence, text: c.text,
+      claims: claimSnapshot.map((c) => ({
+        id: c.id,
+        agent: c.agent,
+        day: c.day,
+        kind: c.kind,
+        status: c.status,
+        confidence: c.confidence,
+        source: c.source,
+        evidence: c.evidence,
+        text: c.text,
       })),
       reflections,
     },
@@ -347,15 +427,18 @@ writeFileSync(
 claims.close();
 writeFileSync(
   join(runDir, "digest.json"),
-  JSON.stringify({ rounds: ROUNDS, chain, terminalState: state, invalidTotal }, null, 2) + "\n",
+  JSON.stringify({ rounds: ROUNDS, days: DAYS, chain: snap?.chain ?? "", terminalState: finalState, invalidTotal }, null, 2) + "\n",
 );
+
+await server.close();
 
 console.log(
   JSON.stringify({
     runDir,
     rounds: ROUNDS,
-    chain: chain.slice(0, 16),
-    state: state.slice(0, 16),
+    days: DAYS,
+    posts: posts.length,
+    claims: claimSnapshot.length,
     invalidTotal,
     wallSeconds: Math.round((performance.now() - startedAt) / 100) / 10,
   }),

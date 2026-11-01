@@ -168,6 +168,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const agentIndex = new Map<string, number>();
   island.agents.forEach((a, i) => agentIndex.set(a.name, i));
 
+  const boardFor = (limit = 20): readonly BoardPostView[] => {
+    const all = store.getBoardPosts(0, 1000);
+    return all.slice(-limit);
+  };
+
   const observeFor = (agent: string, index: number): Observation =>
     observe(island, index, {
       tick,
@@ -333,7 +338,14 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         send(res, 400, { error: "content is required" });
         return;
       }
-      send(res, 200, store.postBoard(tick, session.agent, content));
+      const created = store.postBoard(tick, session.agent, content);
+      send(res, 200, {
+        n: created.id,
+        id: `post_${created.id}`,
+        tick: created.tick,
+        agent: created.agent,
+        content: created.content,
+      });
       return;
     }
 
@@ -341,6 +353,12 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       const after = Number(url.searchParams.get("after") ?? 0);
       const posts: readonly BoardPostView[] = store.getBoardPosts(Number.isFinite(after) ? after : 0);
       send(res, 200, { posts });
+      return;
+    }
+
+    if (path === "/board/recent" && method === "GET") {
+      const limit = Math.min(Number(url.searchParams.get("limit") ?? 20) || 20, 200);
+      send(res, 200, { posts: boardFor(limit) });
       return;
     }
 

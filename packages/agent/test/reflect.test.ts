@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { parseExtraction, ClaimStore, readEpisodic } from "@whisperwind/agent";
+import { appendEpisodic, parseExtraction, ClaimStore, readEpisodic } from "@whisperwind/agent";
 
 test("a well-formed extraction parses", () => {
   const parsed = parseExtraction({
@@ -119,9 +119,8 @@ test("a board-sourced claim is not downgraded for lacking evidence", () => {
   store.close();
 });
 
-test("episodic entries written by a reflection keep their day and tick", async () => {
+test("episodic entries written by a reflection keep their day and tick", () => {
   const dir = mkdtempSync(join(tmpdir(), "ww-refl-"));
-  const { appendEpisodic } = await import("@whisperwind/agent");
   appendEpisodic(dir, { t: 7200, day: 2, summary: "reflected", detail: "detail" });
   const entries = readEpisodic(dir);
   assert.equal(entries[0]?.day, 2);

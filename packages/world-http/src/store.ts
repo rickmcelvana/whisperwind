@@ -21,8 +21,22 @@ export interface ChatMessageView extends Omit<ChatMessage, "id"> {
   readonly n: number;
 }
 
-export interface BoardPostView extends Omit<BoardPost, "id"> {
+/**
+ * A post as an agent sees it. `id` is the string a model cites (`post_3`), because
+ * provenance is declared by citing an id and a bare number is easy to confuse with a
+ * tick, a slot, or a claim id.
+ */
+export interface BoardPostView {
   readonly n: number;
+  readonly id: string;
+  readonly tick: number;
+  readonly agent: string;
+  readonly content: string;
+}
+
+/** The string form a model cites: `post_3`. One format everywhere, so a cite resolves. */
+export function boardId(n: number): string {
+  return `post_${n}`;
 }
 
 export class Store {
@@ -74,7 +88,13 @@ export class Store {
     return this._board
       .filter((p) => p.id > start)
       .slice(0, limit)
-      .map((p) => ({ n: p.id, tick: p.tick, agent: p.agent, content: p.content }));
+      .map((p) => ({
+        n: p.id,
+        id: boardId(p.id),
+        tick: p.tick,
+        agent: p.agent,
+        content: p.content,
+      }));
   }
 
   /** Count of board posts and the tick of the latest one. */

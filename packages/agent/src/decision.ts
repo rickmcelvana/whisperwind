@@ -20,6 +20,8 @@ import { asRecord } from "./provider.ts";
 export interface ValidationResult {
   readonly ok: boolean;
   readonly actions: ActionSequence;
+  /** Text the agent wants to put on the shared board, if any. */
+  readonly post: string | null;
   /** Human-readable reason when `ok` is false; used in the repair prompt. */
   readonly error?: string;
 }
@@ -57,6 +59,12 @@ export const ACTION_SCHEMA = {
       },
     },
     reason: { type: "string", maxLength: 200 },
+    /**
+     * Optional note for the shared board. A post is the substrate of the belief-exchange
+     * experiment, so it is part of the decision rather than a separate request: an extra
+     * call per post would double the request count for a behaviour that should be cheap.
+     */
+    post: { type: "string", maxLength: 280 },
   },
   required: ["actions"],
   additionalProperties: false,
@@ -124,8 +132,11 @@ function validateOne(raw: unknown): Action | string {
 export function validateDecision(value: unknown): ValidationResult {
   const rec = asRecord(value);
   if (!rec) {
-    return { ok: false, actions: [], error: "response was not a JSON object" };
+    return { ok: false, actions: [], post: null, error: "response was not a JSON object" };
   }
+
+  const rawPost = rec["post"];
+  const post = typeof rawPost === "string" && rawPost.trim().length > 0 ? rawPost.trim() : null;
 
   let list: unknown[];
   const maybeActions = rec["actions"];
@@ -137,17 +148,18 @@ export function validateDecision(value: unknown): ValidationResult {
     return {
       ok: false,
       actions: [],
+      post,
       error: 'missing "actions" array (or a single action object with "type")',
     };
   }
 
-  if (list.length === 0) return { ok: false, actions: [], error: "actions array is empty" };
+  if (list.length === 0) return { ok: false, actions: [], post, error: "actions array is empty" };
 
   const out: Action[] = [];
   for (const raw of list) {
     const one = validateOne(raw);
-    if (typeof one === "string") return { ok: false, actions: [], error: one };
+    if (typeof one === "string") return { ok: false, actions: [], post, error: one };
     out.push(one);
   }
-  return { ok: true, actions: out };
+  return { ok: true, actions: out, post };
 }

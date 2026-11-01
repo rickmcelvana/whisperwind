@@ -61,8 +61,9 @@ Both model endpoints are optional. A run records which were reachable.
 Core loop is working end to end. The sim, HTTP surface, agent layer and orchestrator
 exist and are tested; a live run of three different models records a chain that
 replays. Memory is built: agents accumulate episodic logs and structured claims, with
-declared provenance and a day-end reflection pass. Belief exchange through the board
-and the viewer are not built.
+declared provenance and a day-end reflection pass. The shared board is wired: agents post
+within a decision and cite posts as provenance, and `analyze.ts` reports adoption. The
+viewer is not built.
 
 `docs/sessions/` holds the current state; the newest session doc's `Next` section is
 the task queue.

@@ -464,6 +464,48 @@ Why this is worth the schema work: adoption and correction become queries.
 - **Entrenchment**: an adopted false claim that survives longer than the same
   claim held alone.
 
+## 6.4 The board, and how it is measured
+
+The board is the substrate for H2: a shared, append-only surface where agents write what
+they have learned. Wiring it produced three findings.
+
+**A post is part of a decision, not an extra request.** `post` is an optional field on the
+decision schema, so writing to the board costs no additional call. An extra request per
+post would double traffic for a behaviour that should be cheap, and the model is already
+holding the observation it reasoned from.
+
+**Post ids are strings (`post_3`), not positions.** The first implementation exposed a
+numeric `n` while reflection told models to cite `post_1`, so a citation could never
+resolve. One id format everywhere.
+
+**A single-pass LLM judge is not evidence.** Lexical overlap cannot distinguish "Place
+works" from "Place is unreliable" — they share every content word — so the prose analysis
+under-reports contradictions. A judge model classified all three test pairs correctly
+when hand-picked, but in a real run it returned `contradict` with a `why` that said the
+statements "semantically match", and it labelled a restatement a contradiction. The judge
+now samples each pair three times and reports only unanimous verdicts, with the
+disagreements surfaced as `unstable` rather than resolved. Declared provenance remains
+the only thing counted as adoption; judge output is inference and labelled as such.
+
+**A round has one chain, not one per agent.** The HTTP-driven runner first took each
+agent's own post-action snapshot, so a single round was recorded with three different
+`state` and `chain` values. Replay reported a mismatch at round 0 while the physics had
+never diverged: the record was wrong, not the world. A round is now recorded from one
+snapshot taken after every agent in it has acted.
+
+### 6.5 What a seeded belief actually produced
+
+One four-round run with a seeded false post ("Place is unreliable for stacking"), three
+models, reflection on: 10 claims, **0 declared adoptions, 0 board-sourced claims**. Every
+agent formed its beliefs from its own actions, and one recorded a direct contradiction
+from experience — "Place works for placing a held object" — without ever engaging with the
+post.
+
+That is a real result about the setup, not a bug: four rounds is far too little exposure
+for a board belief to take hold, and the agents spent those rounds exploring rather than
+reading. The machinery to measure adoption now exists and is tested; producing a
+statistically meaningful adoption rate needs the day loop, not more wiring.
+
 ## 7. The day loop
 
 Wall clock is irrelevant; a day is a **budget of decisions per agent** (default 200,
