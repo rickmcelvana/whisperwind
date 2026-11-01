@@ -43,6 +43,7 @@ real run whose recording replays.
 | Invalid input handling | malformed JSON, unknown action | 400 and a typed rejection respectively, never a 500 |
 | **Live three-model run** | `node packages/orchestrator/bin/live.ts --rounds 3` | glm-5.2:cloud + qwen3.5:9b + gemma4:12b, 0 invalid decisions, 18.3 s wall |
 | That live run replays | `node packages/orchestrator/bin/replay.ts runs/live-…` | `ok: true`, chain and state match |
+| Both run writers share one format | record with `sim/bin/m0.ts`, replay with the orchestrator's replayer | `ok: true`, 20 rounds |
 
 ## Failed / rejected
 
@@ -61,6 +62,15 @@ real run whose recording replays.
   actual position.
 - **Rejected inputs freezing the clock.** A malformed `/input` still runs a Stop round,
   so an agent cannot stall the world by sending garbage.
+- **Two writers of one run format.** `sim/bin/m0.ts` wrote `events.jsonl`,
+  `digest.json` and a snapshot but no `manifest.json`, so the shared replayer threw
+  ENOENT on a perfectly valid run. A test now records with the scripted writer and
+  replays with the orchestrator's replayer.
+- **An unused `worldName` server option**, removed. It was never read.
+- **A false alarm from my own probe script:** a duplicate object key printed the second
+  join's `agentId` under the first join's label, which looked like nondeterministic
+  assignment. Eight repeats and a permanent test confirm join assigns bodies in island
+  order.
 
 ## Decisions changed
 

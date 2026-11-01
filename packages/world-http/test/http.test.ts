@@ -19,7 +19,6 @@ async function withServer(
   const island = buildIsland(config, [...AGENTS]);
   const server = await startServer({
     island,
-    worldName: "island",
     agentNames: [...AGENTS],
     port: 0,
   });
@@ -63,6 +62,17 @@ test("join gives each session a distinct body, and observe reflects it", async (
     assert.equal(obs.player.name, a.agentId);
     assert.equal(obs.others.length, 1);
     assert.equal(obs.others[0]?.name, b.agentId);
+  });
+});
+
+test("join assigns bodies in island order regardless of the requested name", async () => {
+  // The requested name is a display label; the body is the world's, assigned in order.
+  // A replay depends on this: agent index determines spawn position.
+  await withServer(async (base) => {
+    const first = await join(base, "zed");
+    const second = await join(base, "amy");
+    assert.equal(first.agentId, "A");
+    assert.equal(second.agentId, "B");
   });
 });
 

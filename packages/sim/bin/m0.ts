@@ -97,6 +97,32 @@ async function record(): Promise<RecordedRun> {
     join(RUN_DIR, "digest.json"),
     JSON.stringify({ day: 1, rounds: ROUNDS, agents: AGENTS, terminalState: state, chain }, null, 2) + "\n",
   );
+  // A manifest makes this run readable by the shared replayer. Two writers of one run
+  // format is the bug this prevents: the same directory must be replayable by the
+  // orchestrator, not only by this script.
+  writeFileSync(
+    join(RUN_DIR, "manifest.json"),
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        runId: "m0-scripted",
+        createdAt: new Date().toISOString(),
+        world: { name: config.name, seed: config.seed },
+        motion: { tickRate: config.motion.tickRate, walkSpeed: config.motion.walkSpeed },
+        agents: AGENTS.map((name) => ({
+          name,
+          provider: "scripted",
+          model: "none",
+          think: false,
+          capabilities: null,
+        })),
+        rounds: ROUNDS,
+        node: process.version,
+      },
+      null,
+      2,
+    ) + "\n",
+  );
 
   return { events, chain, state };
 }

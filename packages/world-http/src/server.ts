@@ -24,7 +24,6 @@ import { Store, type BoardPostView, type ChatMessageView } from "./store.ts";
 
 export interface ServerOptions {
   readonly island: Island;
-  readonly worldName: string;
   readonly port?: number;
   readonly host?: string;
   /** Agents that may join, in order. */
