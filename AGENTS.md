@@ -63,7 +63,8 @@ exist and are tested; a live run of three different models records a chain that
 replays. Memory is built: agents accumulate episodic logs and structured claims, with
 declared provenance and a day-end reflection pass. The shared board is wired: agents post
 within a decision and cite posts as provenance, and `analyze.ts` reports adoption. The
-viewer is not built.
+viewer is not built. Days reset: geometry and positions return to their start, while the
+board, chat and every agent's memory persist, and multi-day runs replay.
 
 `docs/sessions/` holds the current state; the newest session doc's `Next` section is
 the task queue.

@@ -29,7 +29,9 @@ test("both run writers produce a replayable directory", () => {
   const out = execFileSync(process.execPath, ["packages/orchestrator/bin/replay.ts", "runs/m0"], {
     encoding: "utf8",
   });
-  const verdict = JSON.parse(out.trim().split("\n").pop() ?? "{}") as { ok: boolean; rounds: number };
+  const verdict = JSON.parse(out.trim().split("\n").pop() ?? "{}") as { ok: boolean; days: number };
   assert.equal(verdict.ok, true);
-  assert.equal(verdict.rounds, 20);
+  // The scripted M0 run is a single day; replay reports days, not rounds, since a day
+  // boundary resets the world and the chain.
+  assert.equal(verdict.days, 1);
 });

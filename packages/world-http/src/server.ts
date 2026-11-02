@@ -23,11 +23,27 @@ import { type Island, observe, runRound, startChain, stateDigest } from "@whispe
 import { Store, type BoardPostView, type ChatMessageView } from "./store.ts";
 
 export interface ServerOptions {
-  readonly island: Island;
+  /**
+   * A world to serve. Either pass one island, or pass `rebuild` so the server can create
+   * fresh ones on reset.
+   */
+  readonly island?: Island;
+  /**
+   * Rebuild the world from scratch. Day reset uses this: restoring a snapshot into a new
+   * world leaves the wrapper's named bodies pointing at freed handles, and rebuilding
+   * from config is deterministic anyway.
+   */
+  readonly rebuild?: () => Island;
   readonly port?: number;
   readonly host?: string;
   /** Agents that may join, in order. */
   readonly agentNames: readonly string[];
+  /**
+   * Secret required for operator endpoints (`/day/next`). Without it, an agent that
+   * discovered the URL could reset the world and erase the evidence it was producing.
+   * When unset, operator endpoints are refused rather than left open.
+   */
+  readonly operatorToken?: string;
 }
 
 export interface RunningServer {
@@ -155,15 +171,24 @@ function send(res: ServerResponse, status: number, body: unknown, contentType = 
 }
 
 export async function startServer(opts: ServerOptions): Promise<RunningServer> {
-  const { island } = opts;
+  let island: Island;
+  if (opts.rebuild) {
+    island = opts.rebuild();
+  } else if (opts.island) {
+    island = opts.island;
+  } else {
+    throw new Error("startServer needs either an island or a rebuild function");
+  }
   const store = new Store();
   const sessions = new Map<string, Session>();
   const lastResults = new Map<string, string | null>();
+  /** Actions staged for the current round, keyed by agent. Cleared on commit. */
+  const pending = new Map<string, Action>();
 
   let tick = 0;
   let round = 0;
   let chain = startChain();
-  const day = 1;
+  let day = 1;
 
   const agentIndex = new Map<string, number>();
   island.agents.forEach((a, i) => agentIndex.set(a.name, i));
@@ -224,6 +249,43 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       return;
     }
 
+      /**
+       * Begin a new day: reset geometry and entity positions, keep the board and chat.
+       *
+       * Reset semantics from plan §7: the world is restored so a day is bounded and
+       * comparable, while everything the agents wrote persists. Not gated on a session
+       * because it is an operator action, not something an agent should be able to trigger;
+       * it requires the operator token when one is configured.
+       */
+      if (path === "/day/next" && method === "POST") {
+        // Operator endpoints sit behind a token. An agent shares the same server, so an
+        // unauthenticated reset would let it wipe the world it is being studied in.
+        const supplied = req.headers["x-operator-token"];
+        if (!opts.operatorToken) {
+          send(res, 403, { error: "operator endpoints are disabled: no operator token configured" });
+          return;
+        }
+        if (typeof supplied !== "string" || supplied !== opts.operatorToken) {
+          send(res, 401, { error: "invalid or missing X-Operator-Token" });
+          return;
+        }
+        if (opts.rebuild) {
+          // Handles from the old world are freed by the rebuild; drop per-body state with it.
+          island = opts.rebuild();
+        } else {
+          send(res, 409, { error: "this server has no rebuild function; restart to reset" });
+          return;
+        }
+        day += 1;
+        tick = 0;
+        round = 0;
+        chain = startChain();
+        lastResults.clear();
+        send(res, 200, { day, posts: store.boardSummary().posts });
+        return;
+      }
+
+
     // Everything below requires a session.
     const token = req.headers["x-session"];
     const session = typeof token === "string" ? sessions.get(token) : undefined;
@@ -253,40 +315,59 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
 
       const converted = wireToAction(body);
-      if ("rejected" in converted) {
-        const reason = converted.rejected.ok === false ? converted.rejected.reason : "invalid_args";
-        lastResults.set(session.agent, `rejected ${reason}`);
-        // A rejected input still costs a round, so the world clock cannot be frozen by
-        // an agent that only ever sends malformed actions.
-        const out = runRound(island, {
-          day,
-          round,
-          chain,
-          submissions: [{ agent: session.agent, actions: [{ type: "Stop" }] }],
+
+      /**
+       * A round is the unit the replay verifier reproduces: one runRound per
+       * (day, round) carrying every agent's action. So an action must not advance the
+       * world on arrival; it is staged, and the round commits once every joined agent
+       * has submitted.
+       *
+       * Before this, three agents posting in "round 0" silently produced three rounds,
+       * and the recorded chain could not be reproduced from the recording.
+       */
+      pending.set(session.agent, "rejected" in converted ? { type: "Stop" } : converted.action);
+
+      // A round waits only for agents that have joined. Waiting for an unjoined slot would
+      // stall the world forever in a two-agent world where one never connects.
+      const expected = [...sessions.values()].map((s) => s.agent);
+      const missing = expected.filter((agent) => !pending.has(agent));
+      if (missing.length > 0) {
+        // A rejected action still counts as a submission, so malformed input cannot
+        // stall the world waiting for a retry that will never come.
+        send(res, 200, {
+          observation: observeFor(session.agent, idx),
+          result:
+            "rejected" in converted
+              ? converted.rejected
+              : { ok: true, ticks: 0, note: "staged; waiting for the other agents" },
+          pending: missing,
         });
-        round++;
-        chain = out.chain;
-        tick += out.ticks;
-        send(res, 200, { observation: observeFor(session.agent, idx), result: converted.rejected });
         return;
       }
 
-      const out = runRound(island, {
-        day,
-        round,
-        chain,
-        submissions: [{ agent: session.agent, actions: [converted.action] }],
-      });
+      const submissions = [...pending.entries()].map(([agent, act]) => ({ agent, actions: [act] }));
+      pending.clear();
 
+      const out = runRound(island, { day, round, chain, submissions });
       round++;
       chain = out.chain;
       tick += out.ticks;
 
-      const result = out.records[0]?.result[0];
-      lastResults.set(
-        session.agent,
-        result ? `${converted.action.type} ${result.ok ? "ok" : result.reason}` : `${converted.action.type} unknown`,
-      );
+      for (const rec of out.records) {
+        const first = rec.result[0];
+        lastResults.set(
+          rec.agent,
+          first ? `${rec.action[0]?.type ?? "?"} ${first.ok ? "ok" : first.reason}` : null,
+        );
+      }
+
+      // A rejected input is reported as rejected. It was staged as a Stop so the round
+      // could commit, but telling the agent "ok" would teach it that a malformed action
+      // succeeded. For a valid action, report the world's verdict for this agent.
+      const myRecord = out.records.find((r) => r.agent === session.agent);
+      const result = "rejected" in converted
+        ? converted.rejected
+        : (myRecord?.result[0] ?? { ok: false, reason: "invalid_args", ticks: 1 });
 
       send(res, 200, {
         observation: observeFor(session.agent, idx),

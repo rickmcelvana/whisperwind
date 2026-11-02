@@ -12,6 +12,7 @@
  * intervention: does a model adopt a claim it read, and does anything ever refute it?
  */
 
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -193,7 +194,16 @@ mkdirSync(runDir, { recursive: true });
 
 await initPhysics();
 const island = buildIsland(config, agents.map((a) => a.name));
-const server = await startServer({ island, agentNames: agents.map((a) => a.name), port: 0 });
+const operatorToken = randomUUID();
+const agentNames = agents.map((a) => a.name);
+const server = await startServer({
+  // Rebuild rather than restore a snapshot: restoring into a fresh world leaves the
+  // wrapper's named bodies pointing at freed handles.
+  rebuild: () => buildIsland(config, agentNames),
+  agentNames,
+  operatorToken,
+  port: 0,
+});
 const baseUrl = `http://127.0.0.1:${server.port}`;
 
 const claims = new ClaimStore(join(runDir, "claims.db"));
@@ -201,6 +211,7 @@ const runtimes: AgentRuntime[] = [];
 for (const spec of agents) {
   const p = providerFor(spec.provider);
   const { client } = await WorldClient.join(baseUrl, spec.name);
+  // (session client; the operator view is separate)
   runtimes.push({
     name: spec.name,
     spec,
@@ -209,6 +220,8 @@ for (const spec of agents) {
     workspaceDir: join(runDir, "agents", spec.name, "workspace"),
   });
 }
+
+const operator = new WorldClient(baseUrl, "operator", operatorToken);
 
 if (SEED_POST) {
   // Posted by the first agent so the board has an author; the content is the experiment's
@@ -303,7 +316,10 @@ for (let day = 1; day <= DAYS; day++) {
             (postedId ? ` (posted ${postedId})` : ""),
         );
       }
-      roundResults.push({ agent: rt.name, action: decision.actions, result, posted: postedId, decision });
+      // Record what was SENT, not what was proposed. A model may emit a sequence while
+      // the server applies one action per round; recording the whole sequence made the
+      // recording claim actions the world never performed, and replay diverged.
+      roundResults.push({ agent: rt.name, action: [first], result, posted: postedId, decision });
     }
 
     const snap = await (runtimes[0]?.client.snapshot() ?? Promise.resolve(null));
@@ -369,6 +385,14 @@ for (let day = 1; day <= DAYS; day++) {
       );
     }
   }
+
+  // Reflection must happen before the reset: it is the agent's last chance to read the
+  // world it is about to lose, and the board it cited stays in place across the reset.
+  if (day < DAYS) {
+    const reset = await operator.nextDay();
+    for (const rt of runtimes) daySummaries.set(rt.name, []);
+    console.log(JSON.stringify({ reset: true, into: reset.day, posts: reset.posts }));
+  }
 }
 
 const snap = await runtimes[0]?.client.snapshot();
@@ -376,7 +400,7 @@ const finalState = snap?.state ?? stateDigest(island);
 
 writeFileSync(join(runDir, "events.jsonl"), events.map((e) => JSON.stringify(e)).join("\n") + "\n");
 writeFileSync(join(runDir, "board.json"), JSON.stringify(posts, null, 2) + "\n");
-writeFileSync(join(runDir, "day-1.snap"), island.world.takeSnapshot());
+writeFileSync(join(runDir, `day-${DAYS}-final.snap`), island.world.takeSnapshot());
 writeFileSync(
   join(runDir, "manifest.json"),
   JSON.stringify(

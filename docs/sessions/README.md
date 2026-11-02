@@ -122,5 +122,6 @@ waiting to be reported.
 | 03 | 2026-11-01 | sim-and-live-run | sim core, M0 replay, HTTP, agents, orchestrator; live 3-model run |
 | 04 | 2026-11-01 | memory-layer | claim store, episodic log, reflection; memory in live run |
 | 05 | 2026-11-01 | board | board wired into decisions; adoption observed once; run analysis |
+| 06 | 2026-11-02 | day-reset | day reset, staged rounds, day-aware replay; multi-day run verified |
 
 Append a row when a session doc is created. Never renumber.

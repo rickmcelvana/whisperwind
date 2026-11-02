@@ -33,10 +33,12 @@ export interface JoinResult {
 export class WorldClient {
   readonly baseUrl: string;
   private readonly session: string;
+  private readonly operatorToken: string | undefined;
 
-  constructor(baseUrl: string, session: string) {
+  constructor(baseUrl: string, session: string, operatorToken?: string) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.session = session;
+    this.operatorToken = operatorToken;
   }
 
   /** Join a world and return a client bound to that agent's session. */
@@ -102,6 +104,21 @@ export class WorldClient {
       messages: ChatMessage[];
     };
     return body.messages;
+  }
+
+  /**
+   * Begin a new day: the world's geometry resets, board and chat persist. This is an
+   * operator action; an agent never calls it.
+   */
+  async nextDay(): Promise<{ day: number; posts: number }> {
+    if (!this.operatorToken) {
+      throw new Error("nextDay needs an operator token; the server refuses resets without one");
+    }
+    const body = await this.request("/day/next", {
+      method: "POST",
+      headers: { "x-operator-token": this.operatorToken },
+    });
+    return body as { day: number; posts: number };
   }
 
   async snapshot(): Promise<{

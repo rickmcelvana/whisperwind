@@ -515,6 +515,33 @@ for a board belief to take hold, and the agents spent those rounds exploring rat
 reading. The machinery to measure adoption now exists and is tested; producing a
 statistically meaningful adoption rate needs the day loop, not more wiring.
 
+## 6.6 Day reset, and what it fixed in the recording
+
+A day begins from a world rebuilt from `world.json`, not from a restored snapshot.
+Restoring a Rapier snapshot into a fresh world leaves the wrapper's named bodies pointing
+at freed handles, whereas a rebuild is deterministic and re-binds every body by name.
+Geometry and positions reset; the board, chat and every agent's memory persist.
+
+Making days work exposed two recording bugs that single-day runs had hidden.
+
+**A round must commit across agents.** `/input` used to advance the world on arrival, so
+three agents "in round 0" produced three rounds. The recorded chain could never be
+reproduced, because replay applies one round with every agent's action. Actions are now
+staged and the round commits once every *joined* agent has submitted — waiting on an
+unjoined slot would stall a two-agent world where one never connects.
+
+**The recording must describe what was sent, not what was proposed.** A model asked for an
+action sequence (Jump → Pickup → MoveTo) while the server applies one action per round.
+The event recorded the whole sequence, so replay performed actions the world never did and
+diverged at exactly that round. Events now record the action actually sent.
+
+Both were invisible before multi-day runs because replay failures were being read as
+"the run is long" rather than "the record is wrong".
+
+The operator endpoint (`/day/next`) requires `X-Operator-Token` and is refused outright
+when no token is configured: an agent shares the server, and an unauthenticated reset
+would let it erase the evidence it is producing.
+
 ## 7. The day loop
 
 Wall clock is irrelevant; a day is a **budget of decisions per agent** (default 200,
